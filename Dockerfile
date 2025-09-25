@@ -7,7 +7,6 @@ WORKDIR /app
 # Copy only necessary files
 COPY package.json ./
 COPY index.js ./
-COPY verses.js ./
 COPY mail/postmark.js ./mail/
 
 # Install only production dependencies
