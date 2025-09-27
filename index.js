@@ -92,10 +92,143 @@ const upload = multer({
   },
 });
 
+// Auth helpers (place below other imports)
+const FIREBASE_WEB_API_KEY = process.env.FIREBASE_WEB_API_KEY;
+if (!FIREBASE_WEB_API_KEY) {
+  console.warn("WARNING: FIREBASE_WEB_API_KEY is not set. /api/auth/signin will fail.");
+}
+
+// Simple email/password sanity checks (optional)
+const MIN_PASSWORD_LEN = Number(process.env.PASSWORD_MIN_LENGTH || 8);
+function isValidEmail(s) {
+  return typeof s === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+}
+
+// Middleware: verify Firebase ID token from "Authorization: Bearer <token>"
+async function requireAuth(req, res, next) {
+  try {
+    const hdr = req.headers.authorization || "";
+    const [, token] = hdr.split(" ");
+    if (!token) return res.status(401).json({ error: "Missing bearer token" });
+
+    const decoded = await admin.auth().verifyIdToken(token);
+    // Attach to request for downstream use
+    req.user = decoded;
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: "Invalid or expired token" });
+  }
+}
+
+
 // ---------- ROUTES (your existing ones) ----------
 app.get("/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
+
+// POST /api/auth/signup
+// body: { email, password, displayName? }
+app.post("/api/auth/signup", async (req, res, next) => {
+  try {
+    const { email, password, displayName } = req.body || {};
+    if (!isValidEmail(email)) return res.status(400).json({ error: "Valid email required" });
+    if (!password || password.length < MIN_PASSWORD_LEN) {
+      return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD_LEN} characters` });
+    }
+
+    // Create user in Firebase Auth
+    const userRecord = await admin.auth().createUser({
+      email: String(email).toLowerCase(),
+      password,
+      displayName: displayName || undefined,
+      emailVerified: false,
+      disabled: false
+    });
+
+    // Optional: initialize a Firestore profile doc
+    const profileRef = db.collection("users").doc(userRecord.uid);
+    await profileRef.set({
+      email: userRecord.email,
+      displayName: userRecord.displayName || null,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      role: "user"
+    }, { merge: true });
+
+    // Issue a custom token (client must exchange for ID token)
+    const customToken = await admin.auth().createCustomToken(userRecord.uid);
+    return res.status(201).json({
+      uid: userRecord.uid,
+      customToken,
+      info: "Exchange customToken for an ID token using Firebase client SDK."
+    });
+  } catch (err) {
+    // Handle common Firebase errors gracefully
+    if (err?.code === "auth/email-already-exists") {
+      return res.status(409).json({ error: "Email already in use" });
+    }
+    return next(err);
+  }
+});
+
+
+// POST /api/auth/signin
+// body: { email, password }
+app.post("/api/auth/signin", async (req, res, next) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!isValidEmail(email)) return res.status(400).json({ error: "Valid email required" });
+    if (!password) return res.status(400).json({ error: "Password required" });
+
+    if (!FIREBASE_WEB_API_KEY) {
+      return res.status(500).json({ error: "Server missing FIREBASE_WEB_API_KEY config" });
+    }
+
+    // Identity Toolkit verifyPassword endpoint
+    const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_WEB_API_KEY}`;
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // returnSecureToken ensures refreshToken in response
+      body: JSON.stringify({ email: String(email).toLowerCase(), password, returnSecureToken: true })
+    });
+
+    const data = await r.json();
+    if (!r.ok) {
+      // Surface common auth errors clearly
+      const errMsg = data?.error?.message || "Authentication failed";
+      const map = {
+        "EMAIL_NOT_FOUND": "No user found with that email",
+        "INVALID_PASSWORD": "Invalid password",
+        "USER_DISABLED": "User account is disabled"
+      };
+      return res.status(401).json({ error: map[errMsg] || errMsg });
+    }
+
+    // data contains: idToken, refreshToken, localId (uid), expiresIn (seconds), etc.
+    return res.json({
+      uid: data.localId,
+      idToken: data.idToken,
+      refreshToken: data.refreshToken,
+      expiresIn: Number(data.expiresIn || 3600)
+    });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// GET /api/me  (protected)
+// Header: Authorization: Bearer <ID_TOKEN>
+app.get("/api/me", requireAuth, async (req, res) => {
+  // req.user was set by requireAuth (decoded Firebase token)
+  // Example shape: { uid, email, name, picture, auth_time, ... }
+  res.json({
+    uid: req.user.uid,
+    email: req.user.email || null,
+    auth_time: req.user.auth_time,
+    claims: req.user
+  });
+});
+
 
 app.post("/api/subscribe", async (req, res, next) => {
   try {
@@ -166,7 +299,7 @@ app.get("/api/get-career/:id", async (req, res, next) => {
   }
 });
 
-app.post("/api/add-careers", async (req, res, next) => {
+app.post("/api/add-careers", requireAuth, async (req, res, next) => {
   try {
     let careers = req.body;
 
