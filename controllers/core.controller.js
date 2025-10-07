@@ -1,7 +1,6 @@
 import fetch from "node-fetch";
 import mime from "mime";
 import { admin, db, bucket } from "../config/firebase.js";
-import { upload } from "../config/upload.js";
 import {
   sendWelcomeEmail,
   sendVolunteerApplicationReceipt,
