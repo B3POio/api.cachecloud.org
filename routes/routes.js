@@ -40,6 +40,8 @@ router.get("/user/wallets", requireAuth, getUserWallets);
 router.delete("/user/wallets", requireAuth, deleteUserWallet);
 router.put("/user/wallets", requireAuth, updateUserWallet);
 
+// Settings
+router.put("/user/email/mirror", requireAuth, c.mirrorAuthedEmail);
 
 
 export default router;
