@@ -3,7 +3,8 @@ import { Router } from "express";
 import * as c from "../controllers/core.controller.js";
 import { requireAuth } from "../middlewares/auth.js";
 import { upload } from "../config/upload.js";
-import * as crypto from "../controllers/crypto.controller.js"; // 👈 NEW
+import * as crypto from "../controllers/crypto.controller.js";
+import { saveUserWallet, getUserWallets, deleteUserWallet, updateUserWallet } from "../controllers/user.portfolio.controller.js";
 
 const router = Router();
 
@@ -32,5 +33,13 @@ router.post("/volunteers/apply", upload.single("resume"), c.applyVolunteer);
 router.get("/crypto/global", requireAuth, crypto.getGlobal);
 router.get("/crypto/summary", requireAuth, crypto.getSummary);
 router.get("/crypto/chart", requireAuth, crypto.getChart);
+
+// ✅ Portfolio wallets
+router.post("/user/wallets", requireAuth, saveUserWallet);
+router.get("/user/wallets", requireAuth, getUserWallets);
+router.delete("/user/wallets", requireAuth, deleteUserWallet);
+router.put("/user/wallets", requireAuth, updateUserWallet);
+
+
 
 export default router;
