@@ -380,3 +380,24 @@ export async function applyVolunteer(req, res, next) {
     next(err);
   }
 }
+
+export async function mirrorAuthedEmail(req, res, next) {
+  try {
+    const uid = req.user?.uid;
+    const email = req.user?.email;
+    if (!uid) return res.status(401).json({ error: "Unauthenticated" });
+    if (!email) return res.status(400).json({ error: "No email on session" });
+
+    await db.collection("users").doc(uid).set(
+      {
+        email: String(email).toLowerCase(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    return res.json({ ok: true, email });
+  } catch (err) {
+    next(err);
+  }
+}
