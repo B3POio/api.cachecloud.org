@@ -147,6 +147,36 @@ function mapIntervalToCoinbaseGranularity(interval) {
   return g;
 }
 
+// --- add: human range parser (d/w/m/y) ---
+function parseRangeToDays(rangeStr) {
+  const s = String(rangeStr || "").trim().toLowerCase();
+  const m = s.match(/^(\d+)\s*([dwmy])$/); // e.g. 2w, 1m, 3d, 1y
+  if (m) {
+    const n = Number(m[1]);
+    const unit = m[2];
+    if (unit === "d") return n;
+    if (unit === "w") return n * 7;
+    if (unit === "m") return n * 30;   // treat "month" as 30d for charts
+    if (unit === "y") return n * 365;
+  }
+  // Back-compat: if they passed plain "30d" or unknown -> try old logic
+  if (s.endsWith("d")) return Number(s.slice(0, -1)) || 30;
+  if (s === "1y") return 365;
+  return 30;
+}
+
+// --- add: pick a sane OHLC interval for the range ---
+// We aim for ~200 points, within CoinCap/Coinbase supported set.
+function pickIntervalAuto(days) {
+  if (days <= 2) return "m5";         // 1–2d → 5m
+  if (days <= 3) return "m15";        // 3d   → 15m
+  if (days <= 7) return "m30";        // 7d   → 30m
+  if (days <= 14) return "h1";        // 2w   → 1h
+  if (days <= 30) return "h2";        // 1m   → 2h
+  if (days <= 90) return "h6";        // 3m   → 6h
+  return "d1";                        // long → 1d
+}
+
 // 1) Add this helper near your granularity mapper
 function adjustGranularityForRange(initialGranularitySec, startMs, endMs) {
   const allowed = [60, 300, 900, 3600, 21600, 86400]; // 1m,5m,15m,1h,6h,1d
@@ -277,19 +307,22 @@ export async function getSummary(req, res, next) {
   }
 }
 
-// GET /api/crypto/chart?symbol=BTC&interval=h1&range=30d
+// GET /api/crypto/chart?symbol=BTC&interval=auto&range=2w
 export async function getChart(req, res, next) {
   try {
     const symbol = norm(req.query.symbol || "BTC");
-    const interval = String(req.query.interval || "h1"); // m1|m5|m15|m30|h1|h2|h6|h12|d1
-    const range = String(req.query.range || "30d"); // 1d|7d|30d|90d|1y
+    const rawInterval = String(req.query.interval || "auto"); // 👈 default to auto
+    const rawRange = String(req.query.range || "30d");        // now accepts 2w, 1m, etc.
 
     const ids = IDMAP[symbol];
     if (!ids) return res.status(400).json({ error: `Unsupported symbol: ${symbol}` });
 
     const now = Date.now();
-    const days = range.endsWith("d") ? Number(range.slice(0, -1)) : range === "1y" ? 365 : 30;
+    const days = parseRangeToDays(rawRange);                  // 👈 new parser supports d/w/m/y
     const startMs = now - days * 24 * 60 * 60 * 1000;
+
+    // 👇 compute interval if "auto"
+    const interval = rawInterval === "auto" ? pickIntervalAuto(days) : rawInterval;
 
     const key = `chart:${symbol}:${interval}:${days}d`;
     const hit = getCache(key);
@@ -298,7 +331,7 @@ export async function getChart(req, res, next) {
     let candles = [];
     let provider = null;
 
-    // 1) Try CoinCap candles (preferred)
+    // 1) Try CoinCap candles (preferred OHLC)
     if (!process.env.DISABLE_COINCAP) {
       try {
         candles = await coincapCandles({ baseId: ids.coincap, interval, startMs, endMs: now });
@@ -308,7 +341,7 @@ export async function getChart(req, res, next) {
       }
     }
 
-    // 2) Try CoinCap history (close-only -> o=h=l=c)
+    // 2) Fallback: CoinCap history (close-only -> o=h=l=c)
     if (!candles || candles.length === 0) {
       try {
         candles = await coincapHistory({ baseId: ids.coincap, interval, startMs, endMs: now });
@@ -318,7 +351,7 @@ export async function getChart(req, res, next) {
       }
     }
 
-    // 3) Final fallback: Coinbase Exchange candles (no key)
+    // 3) Final fallback: Coinbase Exchange candles
     if ((!candles || candles.length === 0) && ids.coinbase) {
       try {
         candles = await coinbaseCandles({
@@ -341,8 +374,9 @@ export async function getChart(req, res, next) {
 
     const out = {
       symbol,
-      interval,
-      range: `${days}d`,
+      interval,                      // actual interval used (might be auto-derived)
+      range: rawRange,               // echo back input like "2w", "1m"
+      days,                          // and the resolved day count
       candles,
       provider,
       updatedAt: new Date().toISOString(),
@@ -353,3 +387,4 @@ export async function getChart(req, res, next) {
     next(err);
   }
 }
+
