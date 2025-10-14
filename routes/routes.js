@@ -5,6 +5,7 @@ import { requireAuth } from "../middlewares/auth.js";
 import { upload } from "../config/upload.js";
 import * as crypto from "../controllers/crypto.controller.js";
 import { saveUserWallet, getUserWallets, deleteUserWallet, updateUserWallet } from "../controllers/user.portfolio.controller.js";
+import { getPortfolioSummary, getPortfolioChart } from "../controllers/portfolio.data.controller.js";
 
 const router = Router();
 
@@ -33,6 +34,10 @@ router.post("/volunteers/apply", upload.single("resume"), c.applyVolunteer);
 router.get("/crypto/global", requireAuth, crypto.getGlobal);
 router.get("/crypto/summary", requireAuth, crypto.getSummary);
 router.get("/crypto/chart", requireAuth, crypto.getChart);
+
+// ✅ Portfolio data (BTC now, ETH later)
+router.get("/portfolio/summary", requireAuth, getPortfolioSummary);
+router.get("/portfolio/chart", requireAuth, getPortfolioChart);
 
 // ✅ Portfolio wallets
 router.post("/user/wallets", requireAuth, saveUserWallet);
