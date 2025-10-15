@@ -354,13 +354,15 @@ async function getEthTimeSeries(address, days) {
   return withCum;
 }
 
-// ====== Express handlers ======
+// getPortfolioSummary
 export async function getPortfolioSummary(req, res, next) {
   try {
     const { chain, address: qpAddress } = req.query;
+
     if (chain && String(chain).toLowerCase() !== "eth") {
       const e = new Error("Unsupported chain; this controller only handles 'eth'.");
-      e.status = 400; throw e;
+      e.status = 400;
+      throw e;
     }
 
     let address = (qpAddress || "").trim();
@@ -368,11 +370,27 @@ export async function getPortfolioSummary(req, res, next) {
       const uid = getUserIdFromReq(req);
       address = await getEthAddressForUser(uid);
     }
+
+    // If no address on file, return empty payload (200) and let the frontend handle UX.
+    if (!address) {
+      const empty = {
+        totals: {
+          balance:       0n,
+          totalReceived: 0n,
+          totalSent:     0n,
+          pendingDelta:  0n,
+        },
+        wallets: [],
+      };
+      return res.json(toJSONSafe(empty)); // ensure BigInt-safe JSON
+    }
+
+    // Validate if an address was provided/found
     assertAddress(address);
 
     const stats = await getEthCoreStats(address);
 
-    // ⬇️ Match BTC UI contract
+    // Align with BTC UI contract
     const payload = {
       totals: {
         balance:       stats.balance,
@@ -398,12 +416,16 @@ export async function getPortfolioSummary(req, res, next) {
   }
 }
 
+
+// getPortfolioChart
 export async function getPortfolioChart(req, res, next) {
   try {
     const { chain, range = "30d", address: qpAddress } = req.query;
+
     if (chain && String(chain).toLowerCase() !== "eth") {
       const e = new Error("Unsupported chain; this controller only handles 'eth'.");
-      e.status = 400; throw e;
+      e.status = 400;
+      throw e;
     }
 
     let address = (qpAddress || "").trim();
@@ -411,17 +433,31 @@ export async function getPortfolioChart(req, res, next) {
       const uid = getUserIdFromReq(req);
       address = await getEthAddressForUser(uid);
     }
+
+    // No address on file → empty series, 200 OK
+    if (!address) {
+      return res.json({
+        chain: "eth",
+        range,
+        points: [],
+        note: "No Ethereum address on file; returning empty time series.",
+      });
+    }
+
+    // Validate if an address was provided/found
     assertAddress(address);
 
     const days = rangeToDays(range);
     const points = await getEthTimeSeries(address, days);
 
-    return res.json(toJSONSafe({
-      chain: "eth",
-      range,
-      points, // bigint fields -> strings via toJSONSafe
-      note: "Values in wei. Chart shows confirmed history only (no mempool).",
-    }));
+    return res.json(
+      toJSONSafe({
+        chain: "eth",
+        range,
+        points, // bigint fields (if any) → strings via toJSONSafe
+        note: "Values in wei. Chart shows confirmed history only (no mempool).",
+      })
+    );
   } catch (err) {
     next(err);
   }
