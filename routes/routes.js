@@ -5,6 +5,7 @@ import { requireAuth } from "../middlewares/auth.js";
 import { upload } from "../config/upload.js";
 import * as crypto from "../controllers/crypto.controller.js";
 import * as metals from "../controllers/metals.controller.js";
+import { getPolymarketBitcoin } from '../controllers/polymarket.controller.js';
 import { saveUserWallet, getUserWallets, deleteUserWallet, updateUserWallet } from "../controllers/user.portfolio.controller.js";
 import { getPortfolioSummary, getPortfolioChart } from "../controllers/portfolio.btc.data.controller.js";
 import { getPortfolioSummary as getEthSummary, getPortfolioChart as getEthChart } from "../controllers/portfolio.eth.data.controller.js";
@@ -36,6 +37,10 @@ router.post("/volunteers/apply", upload.single("resume"), c.applyVolunteer);
 router.get("/crypto/global", requireAuth, crypto.getGlobal);
 router.get("/crypto/summary", requireAuth, crypto.getSummary);
 router.get("/crypto/chart", requireAuth, crypto.getChart);
+
+// ✅ Polymarket (auth-protected)
+router.get('/polymarket/bitcoin', requireAuth, getPolymarketBitcoin);
+
 
 // ✅ Metals (auth-protected)
 router.get("/metals/summary", requireAuth, metals.getSummary);
