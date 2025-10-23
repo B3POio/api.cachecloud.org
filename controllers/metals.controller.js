@@ -77,7 +77,6 @@ function rangeToHistoricalParams(rangeIn) {
   const range = String(rangeIn || "30d").toLowerCase();
   const now = unixNowSec();
 
-  // allow numeric ?days=N override
   function fromDays(days, period) {
     const secs = Math.max(1, Math.floor(Number(days))) * 24 * 60 * 60;
     return { period, start: now - secs, end: now };
@@ -85,22 +84,33 @@ function rangeToHistoricalParams(rangeIn) {
 
   switch (range) {
     case "1d":
-      return fromDays(1, "15m");   // 15-minute bars for 1 day
+      return fromDays(1, "15m");     // 15-min bars
     case "2d":
-      return fromDays(2, "30m");   // 30-minute bars
+      return fromDays(2, "30m");     // 30-min bars
     case "3d":
-      return fromDays(3, "1h");    // 1-hour bars
+      return fromDays(3, "1h");      // 1-hour bars
     case "1w":
     case "7d":
-      return fromDays(7, "4h");    // 4-hour bars
+      return fromDays(7, "4h");      // 4-hour bars
     case "2w":
     case "14d":
-      return fromDays(14, "4h");   // 4-hour bars
+      return fromDays(14, "4h");     // 4-hour bars
     case "30d":
+      return fromDays(30, "1d");     // 1-day bars
+    case "60d":
+      return fromDays(60, "1d");     // 1-day bars
+    case "90d":
+      return fromDays(90, "1d");     // 1-day bars
+    case "180d":
+      return fromDays(180, "1d");    // 2-day bars
+    case "1y":
+    case "365d":
+      return fromDays(365, "1d");    // 2-day bars (coarser)
     default:
-      return fromDays(30, "1d");   // 1-day bars
+      return fromDays(30, "1d");     // fallback
   }
 }
+
 
 /* ----------------------- GET /metals/summary ----------------------- */
 /**
@@ -114,7 +124,13 @@ export async function getSummary(req, res) {
       return res.status(500).json({ error: "Server is not configured with API_NINJA_API_KEY" });
     }
 
-    const base = req.query.base?.toUpperCase();
+    const rawBase = String(req.query.base || "").toUpperCase();
+    const base =
+      rawBase === "GOLD" ? "XAU" :
+      rawBase === "SILVER" ? "XAG" :
+      rawBase === "PLATINUM" ? "XPT" :
+      rawBase === "PALLADIUM" ? "XPD" :
+      rawBase || undefined; // keep original for XAU/XAG/etc
     // API Ninjas commodityprice is USD; keep currency fixed to USD to match the UI
     const currency = "USD";
 
