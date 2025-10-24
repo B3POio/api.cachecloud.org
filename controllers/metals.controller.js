@@ -111,6 +111,50 @@ function rangeToHistoricalParams(rangeIn) {
   }
 }
 
+// --- NEW: tiny cache for FX ---
+const fxCache = new Map(); // key -> { val, exp }
+function setFx(key, val, ttlSec = 300) {
+  fxCache.set(key, { val, exp: Date.now() + ttlSec * 1000 });
+}
+function getFx(key) {
+  const x = fxCache.get(key);
+  if (!x) return null;
+  if (Date.now() > x.exp) { fxCache.delete(key); return null; }
+  return x.val;
+}
+
+// --- NEW: same FX sources you already use in crypto controller ---
+const FX_COINBASE = "https://api.coinbase.com/v2/exchange-rates?currency=USD";
+const FX_OPEN_ER  = "https://open.er-api.com/v6/latest/USD";
+
+async function getUsdToFiatRate(targetFiat /* "USD"|"EUR"|"GBP" */) {
+  const fiat = String(targetFiat || "USD").toUpperCase();
+  if (fiat === "USD") return 1;
+
+  const cacheKey = `fx:USD:${fiat}`;
+  const hit = getFx(cacheKey);
+  if (hit) return hit;
+
+  // 1) Coinbase FX
+  try {
+    const { data } = await axios.get(FX_COINBASE, { timeout: 8000 });
+    const rateStr = data?.data?.rates?.[fiat];
+    const rate = rateStr != null ? Number(rateStr) : undefined;
+    if (rate && isFinite(rate) && rate > 0) { setFx(cacheKey, rate, 300); return rate; }
+  } catch {}
+
+  // 2) Open ER fallback
+  try {
+    const { data } = await axios.get(FX_OPEN_ER, { timeout: 8000 });
+    const rate = data?.rates?.[fiat];
+    if (rate && isFinite(Number(rate)) && Number(rate) > 0) {
+      setFx(cacheKey, Number(rate), 300);
+      return Number(rate);
+    }
+  } catch {}
+
+  throw new Error(`FX rate not available for ${fiat}`);
+}
 
 /* ----------------------- GET /metals/summary ----------------------- */
 /**
@@ -118,6 +162,7 @@ function rangeToHistoricalParams(rangeIn) {
  *   base=[XAU|XAG|XPT|XPD]     (default: all four)
  *   currency=[USD]             (API Ninjas quotes are USD; we keep USD)
  */
+// ----------------------- GET /metals/summary -----------------------
 export async function getSummary(req, res) {
   try {
     if (!API_KEY) {
@@ -130,51 +175,54 @@ export async function getSummary(req, res) {
       rawBase === "SILVER" ? "XAG" :
       rawBase === "PLATINUM" ? "XPT" :
       rawBase === "PALLADIUM" ? "XPD" :
-      rawBase || undefined; // keep original for XAU/XAG/etc
-    // API Ninjas commodityprice is USD; keep currency fixed to USD to match the UI
-    const currency = "USD";
+      rawBase || undefined;
 
-    // Supported bases and mapping to commodity names
+    // NEW: accept EUR/GBP; default USD
+    const reqCurrency = String(req.query.currency || "USD").toUpperCase();
+    const currency = ["USD", "EUR", "GBP"].includes(reqCurrency) ? reqCurrency : "USD";
+
     const ALL = ["XAU", "XAG", "XPT", "XPD"];
     const wanted = ALL.filter((b) => !base || b === base);
+    const toName = (b) => (b === "XAU" ? "gold" : b === "XAG" ? "silver" : b === "XPT" ? "platinum" : "palladium");
 
-    // Map to API names
-    const toName = (b) =>
-      b === "XAU" ? "gold" : b === "XAG" ? "silver" : b === "XPT" ? "platinum" : "palladium";
-
-    // Fetch serially to stay within rate limits; switch to Promise.all if comfortable
     const items = [];
     for (const b of wanted) {
       const name = toName(b);
-      const data = await ninjaGet("/commodityprice", { name });
-      // API can return array or object; normalize
-      const row = Array.isArray(data) ? data[0] : data;
-      const price = toNum(row?.price);
+
+      // 1) Always fetch USD spot from API Ninjas (their native quote)
+      const nin = await ninjaGet("/commodityprice", { name }); // USD-only
+      const row = Array.isArray(nin) ? nin[0] : nin;
+      const priceUsd = toNum(row?.price);
       const time = row?.time != null ? Number(row.time) : null;
+
+      // 2) Convert to requested currency using FX (only if not USD)
+      let price = priceUsd;
+      if (price != null && currency !== "USD") {
+        const r = await getUsdToFiatRate(currency);
+        price = priceUsd * r;
+      }
 
       items.push({
         symbol: `${b}/${currency}`,
         name,
         currency,
         price,
-        change: null,          // 24h delta enriched on the proxy already (optional)
+        change: null,
         percentChange: null,
         open: null,
         high: null,
         low: null,
         previousClose: null,
         datetime: time ? new Date(time * 1000).toISOString() : new Date().toISOString(),
+        provider: currency === "USD" ? "api-ninjas" : "api-ninjas+fx",
       });
     }
 
-    return res.json({
-      updatedAt: new Date().toISOString(),
-      items,
-    });
+    return res.json({ updatedAt: new Date().toISOString(), items });
   } catch (err) {
     console.error("[/metals/summary] error:", err);
     return res.status(err.status || 502).json({
-      error: err?.expose && err.message ? err.message : "Failed to fetch metals summary from API Ninjas",
+      error: err?.expose && err.message ? err.message : "Failed to fetch metals summary",
     });
   }
 }
