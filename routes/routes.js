@@ -1,14 +1,14 @@
 // routes/routes.js
 import { Router } from "express";
-import * as c from "../controllers/core.controller.js";
-import { requireAuth } from "../middlewares/auth.js";
 import { upload } from "../config/upload.js";
+import { requireAuth } from "../middlewares/auth.js";
+import * as c from "../controllers/core.controller.js";
 import * as crypto from "../controllers/crypto.controller.js";
 import * as metals from "../controllers/metals.controller.js";
-import { getPolymarketBitcoin, getPolymarketEthereum, getPolymarketGold,  getPolymarketSilver} from '../controllers/polymarket.controller.js';
-import { saveUserWallet, getUserWallets, deleteUserWallet, updateUserWallet } from "../controllers/user.portfolio.controller.js";
+import * as wallets from "../controllers/user.portfolio.controller.js";
 import { getPortfolioSummary, getPortfolioChart } from "../controllers/portfolio.btc.data.controller.js";
 import { getPortfolioSummary as getEthSummary, getPortfolioChart as getEthChart } from "../controllers/portfolio.eth.data.controller.js";
+import { getPolymarketBitcoin, getPolymarketEthereum, getPolymarketGold,  getPolymarketSilver} from '../controllers/polymarket.controller.js';
 
 const router = Router();
 
@@ -56,11 +56,18 @@ router.get("/portfolio/btc/chart", requireAuth, getPortfolioChart);
 router.get("/portfolio/eth/summary", requireAuth, getEthSummary);
 router.get("/portfolio/eth/chart", requireAuth, getEthChart);     
 
-// ✅ Portfolio wallets (auth-protected)
-router.post("/user/wallets", requireAuth, saveUserWallet);
-router.get("/user/wallets", requireAuth, getUserWallets);
-router.delete("/user/wallets", requireAuth, deleteUserWallet);
-router.put("/user/wallets", requireAuth, updateUserWallet);
+// ✅ Crypto wallets (auth-protected)
+router.get("/user/wallets", requireAuth, wallets.getUserWallets);
+router.put("/user/wallets", requireAuth, wallets.updateUserWallet);
+router.post("/user/wallets", requireAuth, wallets.saveUserWallet);
+router.delete("/user/wallets", requireAuth, wallets.deleteUserWallet);
+
+// ✅ Precious metals wallets (auth-protected)
+router.get("/user/metalswallet", requireAuth, wallets.getPreciousHoldings);
+router.put("/user/metalswallet", requireAuth, wallets.updatePreciousHolding);
+router.post("/user/metalswallet", requireAuth, wallets.savePreciousHolding);
+router.delete("/user/metalswallet", requireAuth, wallets.deletePreciousHolding);
+
 
 // ✅ Settings (auth-protected)
 router.put("/user/email/mirror", requireAuth, c.mirrorAuthedEmail);
