@@ -15,29 +15,15 @@ function isValidEmail(email) {
   return typeof email === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-// Middleware: verify Firebase ID token
-export async function requireAuth(req, res, next) {
-  try {
-    const hdr = req.headers.authorization || "";
-    const [, token] = hdr.split(" ");
-    if (!token) return res.status(401).json({ error: "Missing bearer token" });
-
-    const decoded = await admin.auth().verifyIdToken(token);
-    req.user = decoded;
-    next();
-  } catch {
-    return res.status(401).json({ error: "Invalid or expired token" });
-  }
-}
-
 // ---------- ROUTE CONTROLLERS ----------
 
 export async function health(_req, res) {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 }
 
-// AUTH ------------------------------------------------------
+// AUTH  ----------------------------------------------------
 
+// POST /auth/signup
 export async function signup(req, res, next) {
   try {
     const { email, password, displayName } = req.body || {};
@@ -82,6 +68,7 @@ export async function signup(req, res, next) {
   }
 }
 
+// POST /auth/signin
 export async function signin(req, res, next) {
   try {
     const { email, password } = req.body || {};
