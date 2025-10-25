@@ -44,26 +44,24 @@ router.get('/polymarket/ethereum', requireAuth, getPolymarketEthereum);
 router.get('/polymarket/gold', requireAuth, getPolymarketGold);
 router.get('/polymarket/silver', requireAuth, getPolymarketSilver);
 
-
 // ✅ Metals (auth-protected)
 router.get("/metals/summary", requireAuth, metals.getSummary);
 router.get("/metals/chart", requireAuth, metals.getChart);
 
-// ✅ Portfolio data (BTC now, ETH later)
+// ✅ Portfolio data (auth-protected)
 router.get("/portfolio/btc/summary", requireAuth, getPortfolioSummary);
 router.get("/portfolio/btc/chart", requireAuth, getPortfolioChart);
 
 router.get("/portfolio/eth/summary", requireAuth, getEthSummary);
 router.get("/portfolio/eth/chart", requireAuth, getEthChart);     
 
-// ✅ Portfolio wallets
+// ✅ Portfolio wallets (auth-protected)
 router.post("/user/wallets", requireAuth, saveUserWallet);
 router.get("/user/wallets", requireAuth, getUserWallets);
 router.delete("/user/wallets", requireAuth, deleteUserWallet);
 router.put("/user/wallets", requireAuth, updateUserWallet);
 
-// Settings
+// ✅ Settings (auth-protected)
 router.put("/user/email/mirror", requireAuth, c.mirrorAuthedEmail);
-
 
 export default router;

@@ -32,7 +32,7 @@ ENV NODE_OPTIONS="--enable-source-maps"
 
 # HEALTHCHECK (adjust /health path if needed)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD curl -fsS http://localhost:5015/health || exit 1
+  CMD curl -fsS http://localhost:5015/api/health || exit 1
 
 # tini handles proper signal forwarding (SIGTERM) for graceful shutdowns
 ENTRYPOINT ["/sbin/tini","--"]
