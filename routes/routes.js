@@ -18,6 +18,7 @@ router.get("/health", c.health);
 // Auth
 router.post("/auth/signup", c.signup);
 router.post("/auth/signin", c.signin);
+router.post("/auth/signout", requireAuth,  c.signout);
 router.get("/me", requireAuth, c.me);
 
 // Subscribers

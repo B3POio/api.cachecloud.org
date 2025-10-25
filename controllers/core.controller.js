@@ -129,6 +129,36 @@ export async function signin(req, res, next) {
   }
 }
 
+// POST /auth/signout
+export async function signout(req, res, next) {
+  try {
+    const hdr = req.headers.authorization || "";
+    const [, token] = hdr.split(" ");
+    if (!token)
+      return res.status(400).json({ error: "Missing bearer token" });
+
+    // Verify the token and revoke it
+    const decoded = await admin.auth().verifyIdToken(token);
+    await admin.auth().revokeRefreshTokens(decoded.uid);
+
+    // Optional: log or update user record
+    await db.collection("users").doc(decoded.uid).set(
+      {
+        lastSignoutAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    return res.json({ message: "Successfully signed out" });
+  } catch (err) {
+    if (err.code === "auth/id-token-expired") {
+      return res.status(400).json({ error: "Token already expired" });
+    }
+    next(err);
+  }
+}
+
+
 export function me(req, res) {
   res.json({
     uid: req.user.uid,
