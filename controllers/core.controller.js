@@ -26,7 +26,7 @@ export async function health(_req, res) {
 // POST /auth/signup
 export async function signup(req, res, next) {
   try {
-    const { email, password, displayName } = req.body || {};
+    const { email, password, displayName, interests } = req.body || {};
     if (!isValidEmail(email))
       return res.status(400).json({ error: "Valid email required" });
     if (!password || password.length < MIN_PASSWORD_LEN) {
@@ -34,6 +34,16 @@ export async function signup(req, res, next) {
         .status(400)
         .json({ error: `Password must be at least ${MIN_PASSWORD_LEN} characters` });
     }
+
+    // ---- interests: normalize & validate ----
+    const ALLOWED = new Set(["bitcoin", "ethereum", "gold", "silver"]);
+    const parsedInterests = Array.isArray(interests) ? interests : [];
+    const normalizedInterests = [...new Set(
+      parsedInterests
+        .filter((v) => typeof v === "string")
+        .map((v) => v.trim().toLowerCase())
+        .filter((v) => ALLOWED.has(v))
+    )];
 
     const userRecord = await admin.auth().createUser({
       email: String(email).toLowerCase(),
@@ -50,6 +60,7 @@ export async function signup(req, res, next) {
         displayName: userRecord.displayName || null,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         role: "user",
+        interests: normalizedInterests,
       },
       { merge: true }
     );
