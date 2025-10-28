@@ -2,7 +2,10 @@
 import admin from "firebase-admin";
 
 const db = admin.firestore();
-const MEMPOOL_BASE = process.env.MEMPOOL_API_BASE || "https://blockstream.info/api";
+
+const MEMPOOL_BASE = process.env.ENTERPRISE_MEMPOOL_API_BASE || "https://enterprise.blockstream.info/api";
+const CLIENT_ID = process.env.BLOCKSTREAM_CLIENT_ID;
+const CLIENT_SECRET = process.env.BLOCKSTREAM_CLIENT_SECRET;
 
 // Reuse the same shape your other controller supports
 function getUserIdFromReq(req) {
@@ -15,21 +18,135 @@ function getUserIdFromReq(req) {
   );
 }
 
-// ----------- tiny fetch helper with basic retry -----------
-async function fetchJson(url, tries = 2) {
-  let err;
-  for (let i = 0; i < tries; i++) {
-    try {
-      const res = await fetch(url, { headers: { "accept": "application/json" } });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.json();
-    } catch (e) {
-      err = e;
-      await new Promise(r => setTimeout(r, 300 * (i + 1)));
+// --- helpers (top of file) ---
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+
+// ---- Add near top (with your other helpers) ----
+let blockstreamTokenCache = { token: null, expiry: 0 };
+
+async function getBlockstreamToken() {
+  const now = Date.now();
+  if (blockstreamTokenCache.token && now < blockstreamTokenCache.expiry) {
+    return blockstreamTokenCache.token;
+  }
+
+  if (!CLIENT_ID || !CLIENT_SECRET) {
+    throw new Error("Missing BLOCKSTREAM_CLIENT_ID or BLOCKSTREAM_SECRET_ID");
+  }
+
+  const tokenUrl = process.env.BLOCKSTREAM_ENTERPRISE_LOGIN_URL;
+
+  // Attempt A: credentials in body (common)
+  const bodyA = new URLSearchParams();
+  bodyA.set("client_id", CLIENT_ID);
+  bodyA.set("client_secret", CLIENT_SECRET);
+  bodyA.set("grant_type", "client_credentials");
+  // scope often optional; add if your client requires it:
+  // bodyA.set("scope", "openid");
+
+  let res = await fetch(tokenUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: bodyA,
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    const needsBasic =
+      res.status === 401 &&
+      /invalid_client|unauthorized_client/i.test(text);
+
+    if (!needsBasic) {
+      throw new Error(`Blockstream login failed: ${res.status} ${text}`);
+    }
+
+    // Attempt B: client secret via Basic header
+    const basic = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString("base64");
+    const bodyB = new URLSearchParams();
+    bodyB.set("grant_type", "client_credentials");
+    // bodyB.set("scope", "openid");
+
+    res = await fetch(tokenUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: `Basic ${basic}`,
+      },
+      body: bodyB,
+    });
+
+    if (!res.ok) {
+      const t2 = await res.text();
+      throw new Error(`Blockstream login failed (basic): ${res.status} ${t2}`);
     }
   }
-  throw err;
+
+  const data = await res.json();
+  const token = data.access_token;
+  const expiresIn = Number(data.expires_in || 3600);
+  if (!token) throw new Error("Blockstream login succeeded with no access_token");
+
+  // refresh a little early
+  blockstreamTokenCache = { token, expiry: Date.now() + expiresIn * 1000 - 30_000 };
+  return token;
 }
+
+// Replace your existing fetchJson with this (keeps your retries/backoff)
+async function fetchJson(url, tries = 6) {
+  let lastErr;
+  for (let attempt = 0; attempt < tries; attempt++) {
+    try {
+      const token = await getBlockstreamToken();
+      const res = await fetch(url, {
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (res.ok) {
+        // Some endpoints (e.g., /blocks/tip/hash) are text/plain
+        const ctype = res.headers.get("content-type") || "";
+        if (ctype.includes("application/json")) return await res.json();
+        return await res.text();
+      }
+
+      if (res.status === 401) {
+        // token expired or audience mismatch → clear and retry
+        blockstreamTokenCache.token = null;
+        continue;
+      }
+
+      if (res.status === 429) {
+        const ra = res.headers.get("retry-after");
+        const waitMs = ra
+          ? Math.max(0, Number(ra)) * 1000
+          : Math.min(30_000, 400 * 2 ** attempt) + Math.floor(Math.random() * 250);
+        await new Promise(r => setTimeout(r, waitMs));
+        continue;
+      }
+
+      if (res.status >= 500 && res.status < 600) {
+        const waitMs = Math.min(20_000, 300 * 2 ** attempt) + Math.floor(Math.random() * 150);
+        await new Promise(r => setTimeout(r, waitMs));
+        continue;
+      }
+
+      throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+    } catch (e) {
+      lastErr = e;
+      const waitMs = Math.min(20_000, 300 * 2 ** attempt) + Math.floor(Math.random() * 150);
+      await new Promise(r => setTimeout(r, waitMs));
+    }
+  }
+  throw lastErr;
+}
+
+
+
 
 /**
  * Pull minimal BTC address stats from Esplora/Mempool:
@@ -61,32 +178,59 @@ async function getBtcAddressCoreStats(address) {
 
 /**
  * Build a daily time-series (UTC) for an address by walking recent txs.
- * NOTE: This computes net flow for the address per tx: (sum of outputs to addr) - (sum of inputs from addr)
- * and maintains a running balance. We only scan back to the requested start date (or a safety page limit).
+ * - Uses a tiny inter-page delay to avoid tripping public rate limits.
+ * - Auto-tunes page depth based on how far back `sinceUnix` is.
  */
 async function getBtcAddressTimeSeries(address, sinceUnix, pageLimit = 8) {
-  // Esplora: /address/:addr/txs returns latest 25 txs; paginate with /txs/chain?last_txid=<id>
+  const day = 86400;
+  const now = Math.floor(Date.now() / 1000);
+
+  // Heuristic page depth for long lookbacks; caller can still raise pageLimit explicitly.
+  const years = Math.max(0, (now - Number(sinceUnix || 0)) / (365 * day));
+  const heuristicLimit =
+    years >= 8 ? 200 :
+    years >= 5 ? 120 :
+    years >= 3 ?  80 :
+    years >= 2 ?  50 :
+    years >= 1 ?  24 : 8;
+
+  const effectiveLimit = Math.max(pageLimit, heuristicLimit);
+
   let url = `${MEMPOOL_BASE}/address/${address}/txs`;
-  let txs = [];
+  const txs = [];
+  const seen = new Set();
   let pages = 0;
 
-  // pull pages until either txs fall all before 'sinceUnix' or we hit page limit
-  while (pages < pageLimit) {
+  while (pages < effectiveLimit) {
+    // small throttle between pages (125–300ms jitter) to reduce 429s
+    if (pages > 0) await sleep(125 + Math.floor(Math.random() * 175));
+
     const page = await fetchJson(url);
     if (!Array.isArray(page) || page.length === 0) break;
-    txs.push(...page);
+
+    for (const t of page) {
+      const id = t?.txid;
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        txs.push(t);
+      }
+    }
+
     pages++;
     const last = page[page.length - 1];
     const lastId = last?.txid;
     if (!lastId) break;
-    // stop if oldest page is older than sinceUnix significantly
-    const minTime = Math.min(...page.map(t => (t?.status?.block_time || Number.MAX_SAFE_INTEGER)));
-    if (minTime !== Number.MAX_SAFE_INTEGER && minTime < sinceUnix - 86400) break;
+
+    // If the oldest tx on this page is well before the window, stop paginating
+    const minTime = Math.min(
+      ...page.map(t => Number(t?.status?.block_time ?? Number.MAX_SAFE_INTEGER))
+    );
+    if (minTime !== Number.MAX_SAFE_INTEGER && minTime < (sinceUnix - day)) break;
+
     url = `${MEMPOOL_BASE}/address/${address}/txs/chain/${lastId}`;
   }
 
-  // Compute per-tx delta for this address
-  // delta = sum(vout to address) - sum(vin from address)
+  // Per-tx delta for this address (confirmed only)
   function isToMe(vout) {
     return vout?.scriptpubkey_address === address;
   }
@@ -95,7 +239,7 @@ async function getBtcAddressTimeSeries(address, sinceUnix, pageLimit = 8) {
   }
 
   const txsWithDelta = txs
-    .filter(t => t?.status?.confirmed) // chart uses confirmed history
+    .filter(t => t?.status?.confirmed)
     .map(t => {
       const time = Number(t?.status?.block_time || 0);
       const received = (t?.vout || []).reduce((s, v) => s + (isToMe(v) ? Number(v?.value || 0) : 0), 0);
@@ -104,23 +248,21 @@ async function getBtcAddressTimeSeries(address, sinceUnix, pageLimit = 8) {
       return { time, delta };
     })
     .filter(x => x.time >= sinceUnix)
-    .sort((a,b) => a.time - b.time);
+    .sort((a, b) => a.time - b.time);
 
   // Collapse into daily buckets (UTC)
-  const day = 86400;
   const dailyMap = new Map();
   for (const { time, delta } of txsWithDelta) {
     const dayStart = Math.floor(time / day) * day; // unix midnight UTC
     dailyMap.set(dayStart, (dailyMap.get(dayStart) || 0) + delta);
   }
 
-  // Turn map -> sorted array of {t, flow}
-  const series = Array.from(dailyMap.entries())
-    .sort((a,b) => a[0] - b[0])
-    .map(([t, flow]) => ({ t, flow })); // flow = net change that day (sats)
-
-  return series;
+  return Array.from(dailyMap.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([t, flow]) => ({ t, flow })); // sats
 }
+
+
 
 /**
  * GET /api/portfolio/summary?chain=btc
@@ -195,7 +337,15 @@ export async function getPortfolioChart(req, res, next) {
     const now = Math.floor(Date.now() / 1000);
     const day = 86400;
 
-    const lookbackDays = range === "90d" ? 90 : range === "1y" ? 365 : 30;
+    const lookbackDays =
+  range === "90d"  ? 90 :
+  range === "1y"   ? 365 :
+  range === "2y"   ? 365 * 2 :
+  range === "3y"   ? 365 * 3 :
+  range === "5y"   ? 365 * 5 :
+  range === "10y"  ? 365 * 10 :
+  30;
+
     const since = now - lookbackDays * day;
 
     // read saved wallets
